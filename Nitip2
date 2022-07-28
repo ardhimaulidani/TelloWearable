@@ -1,0 +1,217 @@
+
+const int OUT_PIN = 25;
+const int IN_PIN = 32;
+const float IN_STRAY_CAP_TO_GND = 22;
+const float IN_CAP_TO_GND  = IN_STRAY_CAP_TO_GND;
+const float R_PULLUP = 34.8;  
+const int MAX_ADC_VALUE = 4095;
+
+void setup()
+{
+  pinMode(OUT_PIN, OUTPUT);
+  pinMode(IN_PIN, OUTPUT);
+  Serial.begin(9600);
+}
+
+void loop()
+{
+    pinMode(IN_PIN, INPUT);
+    digitalWrite(OUT_PIN, HIGH);
+    int val = analogRead(IN_PIN);
+      Serial.print(val);
+      Serial.println(" ADC");
+    digitalWrite(OUT_PIN, LOW);
+
+    if (val < 4000)
+    {
+      pinMode(IN_PIN, OUTPUT);
+
+      float capacitance = (float)val * IN_CAP_TO_GND / (float)(MAX_ADC_VALUE - val);
+      Serial.print(capacitance, 3);
+      Serial.println(" pF");
+    }
+    
+    else
+    {
+      pinMode(IN_PIN, OUTPUT);
+      delay(1);
+      pinMode(OUT_PIN, INPUT_PULLUP);
+      unsigned long u1 = micros();
+      unsigned long t;
+      int digVal;
+
+      do
+      {
+        digVal = digitalRead(OUT_PIN);
+        unsigned long u2 = micros();
+        t = u2 > u1 ? u2 - u1 : u1 - u2;
+      } 
+      
+      while ((digVal < 1) && (t < 400000L));
+
+      pinMode(OUT_PIN, INPUT);  
+      val = analogRead(OUT_PIN);
+      digitalWrite(IN_PIN, HIGH);
+      int dischargeTime = (int)(t / 1000L) * 5;
+      delay(dischargeTime);   
+      pinMode(OUT_PIN, OUTPUT);  
+      digitalWrite(OUT_PIN, LOW);
+      digitalWrite(IN_PIN, LOW);
+
+      float capacitance = -(float)t / R_PULLUP / log(1.0 - (float)val / (float)MAX_ADC_VALUE);
+
+      if (capacitance > 1000.0)
+      {
+        Serial.print(capacitance / 1000.0, 2);
+        Serial.println(" uF");
+        
+      }
+        
+      else
+      {
+        Serial.print(capacitance);
+        Serial.println(" nF");
+ 
+      }
+  }
+    while (micros() % 1000 != 0);
+}
+
+
+#include "BLEDevice.h"
+
+// The remote service we wish to connect to.
+static BLEUUID serviceUUID("4fafc201-1fb5-459e-8fcc-c5c9c331914b");
+// The characteristic of the remote service we are interested in.
+static BLEUUID    charUUID("beb5483e-36e1-4688-b7f5-ea07361b26a8");
+
+static boolean doConnect = false;
+static boolean connected = false;
+static boolean doScan = false;
+static BLERemoteCharacteristic* pRemoteCharacteristic;
+static BLEAdvertisedDevice* myDevice;
+
+int counter;
+
+class MyClientCallback : public BLEClientCallbacks {
+  void onConnect(BLEClient* pclient) {
+  }
+
+  void onDisconnect(BLEClient* pclient) {
+    connected = false;
+    Serial.println("onDisconnect");
+  }
+};
+
+bool connectToServer() {
+    Serial.print("Forming a connection to ");
+    Serial.println(myDevice->getAddress().toString().c_str());
+    
+    BLEClient*  pClient  = BLEDevice::createClient();
+    Serial.println(" - Created client");
+
+    pClient->setClientCallbacks(new MyClientCallback());
+
+    // Connect to the remove BLE Server.
+    pClient->connect(myDevice);  // if you pass BLEAdvertisedDevice instead of address, it will be recognized type of peer device address (public or private)
+    Serial.println(" - Connected to server");
+    pClient->setMTU(517); //set client to request maximum MTU from server (default is 23 otherwise)
+  
+    BLERemoteService* pRemoteService = pClient->getService(serviceUUID);
+    if (pRemoteService == nullptr) {
+      Serial.print("Failed to find our service UUID: ");
+      Serial.println(serviceUUID.toString().c_str());
+      pClient->disconnect();
+      return false;
+    }
+    Serial.println(" - Found our service");
+
+
+    // Obtain a reference to the characteristic in the service of the remote BLE server.
+    pRemoteCharacteristic = pRemoteService->getCharacteristic(charUUID);
+    if (pRemoteCharacteristic == nullptr) {
+      Serial.print("Failed to find our characteristic UUID: ");
+      Serial.println(charUUID.toString().c_str());
+      pClient->disconnect();
+      return false;
+    }
+    Serial.println(" - Found our characteristic");
+
+    // Read the value of the characteristic.
+    if(pRemoteCharacteristic->canRead()) {
+      std::string value = pRemoteCharacteristic->readValue();
+      Serial.print("The characteristic value was: ");
+      Serial.println(value.c_str());
+    }
+
+    if(pRemoteCharacteristic->canNotify())
+      pRemoteCharacteristic->registerForNotify(notifyCallback);
+
+    connected = true;
+    return true;
+}
+/**
+ * Scan for BLE servers and find the first one that advertises the service we are looking for.
+ */
+class MyAdvertisedDeviceCallbacks: public BLEAdvertisedDeviceCallbacks {
+ /**
+   * Called for each advertising BLE server.
+   */
+  void onResult(BLEAdvertisedDevice advertisedDevice) {
+    Serial.print("BLE Advertised Device found: ");
+    Serial.println(advertisedDevice.toString().c_str());
+
+    // We have found a device, let us now see if it contains the service we are looking for.
+    if (advertisedDevice.haveServiceUUID() && advertisedDevice.isAdvertisingService(serviceUUID)) {
+
+      BLEDevice::getScan()->stop();
+      myDevice = new BLEAdvertisedDevice(advertisedDevice);
+      doConnect = true;
+      doScan = true;
+
+    } // Found our server
+  } // onResult
+}; // MyAdvertisedDeviceCallbacks
+
+
+void setup() {
+  Serial.begin(115200);
+  Serial.println("Starting Arduino BLE Client application...");
+  BLEDevice::init("");
+  delay(1000);
+  BLEScan* pBLEScan = BLEDevice::getScan();
+  pBLEScan->setAdvertisedDeviceCallbacks(new MyAdvertisedDeviceCallbacks());
+  pBLEScan->setInterval(1349);
+  pBLEScan->setWindow(449);
+  pBLEScan->setActiveScan(true);
+  pBLEScan->start(5, false);
+} 
+
+void loop() {
+
+  if (doConnect == true) {
+    if (connectToServer()) 
+    {
+      Serial.println("We are now connected to the BLE Server.");
+    } 
+    else 
+    {
+      Serial.println("We have failed to connect to the server; there is nothin more we will do.");
+    }
+    doConnect = false;
+  }
+
+  if (connected) {
+    String newValue = String(counter);
+    Serial.print("Counter:");
+    Serial.println(newValue);
+    pRemoteCharacteristic->writeValue(newValue.c_str(), newValue.length());
+    counter++;
+  }
+  
+  else if(doScan){
+    BLEDevice::getScan()->start(0);
+  }
+  
+  delay(100);
+}
